@@ -49,6 +49,8 @@ def download_video(url, output_directory=None):
             sanitized_title = re.sub(r'[\\/*?:">|<]',"", title) + ".mp4"
 
             if output_directory:
+                if not os.path.isabs(output_directory):
+                    output_directory = os.path.abspath(output_directory)
                 output_path = os.path.join(output_directory, sanitized_title)
             else:
                 output_path = sanitized_title
@@ -68,7 +70,8 @@ def download_video(url, output_directory=None):
                 "-k", "1M",
                 f'--header=Cookie: {cookie_string}',
                 f'--header=Referer: {referrer}',
-                "-o", output_path,
+                "-d", os.path.dirname(output_path),
+                "-o", os.path.basename(output_path),
                 video_url
             ]
 
