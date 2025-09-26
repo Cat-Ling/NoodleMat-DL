@@ -76,5 +76,5 @@ Contributions, issues, and feature requests are welcome! Feel free to check the 
 
 This project is licensed under the 2-Clause BSD License. See the [LICENSE](LICENSE) file for details.
 
-## DMCA
-No removal requests will be entertained.
+## If somebody has an issue
+No removal requests will be entertained from a website/organization that indulges in piracy. Nice job tricking yt-dlp though.
