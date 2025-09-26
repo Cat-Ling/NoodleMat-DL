@@ -75,3 +75,6 @@ Contributions, issues, and feature requests are welcome! Feel free to check the 
 ## 📜 License
 
 This project is licensed under the 2-Clause BSD License. See the [LICENSE](LICENSE) file for details.
+
+## DMCA
+No removal requests will be entertained.
