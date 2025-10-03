@@ -3,7 +3,7 @@
 ![License](https://img.shields.io/badge/license-BSD--2--Clause-blue.svg)
 ![Python Version](https://img.shields.io/badge/python-3.x-brightgreen.svg)
 
-A simple and efficient script to download videos from Noodle Magazine, Mat6Tube, and their proxy websites.
+A simple and efficient script to download videos from Noodle Magazine, Mat6Tube, and their proxy websites (requires manual code modification).
 
 ---
 
