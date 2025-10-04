@@ -75,8 +75,3 @@ Contributions, issues, and feature requests are welcome! Feel free to check the 
 ## 📜 License
 
 This project is licensed under the 2-Clause BSD License. See the [LICENSE](LICENSE) file for details.
-
----
-
-## Removal Requests
-No removal requests will be entertained. Nice job tricking yt-dlp though.
