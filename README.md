@@ -68,7 +68,7 @@ The script fetches the video page, extracts the video playlist, and identifies t
 
 ## 🤝 Contributing
 
-Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](https://github.com/your-username/your-repo/issues).
+Contributions, issues, and feature requests are welcome!
 
 ---
 
