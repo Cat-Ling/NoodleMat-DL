@@ -34,7 +34,7 @@ python NoodleMat-DL.py <URL> [-o /path/to/output]
 
 ### Experimental Version
 
- Uses RPC for aria2c for a consistent download UI. As well as introduces a robust Native downloader as fallback. (Can be forced using the --native flag)
+ Uses RPC for aria2c, leading to a consistent download UI. Also introduces a robust native downloader as fallback. (Can be forced using the --native flag)
 
 ### Examples
 
