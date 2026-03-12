@@ -3,16 +3,8 @@
 ![License](https://img.shields.io/badge/license-BSD--2--Clause-blue.svg)
 ![Python Version](https://img.shields.io/badge/python-3.x-brightgreen.svg)
 
-A simple and efficient script to download videos from Noodle Magazine, Mat6Tube, and their proxy websites (requires manual code modification).
+A simple and efficient script to download videos from NoodleMagazine and Mat6Tube.
 
----
-
-## 🌟 Features
-
--   Downloads from NoodleMagazine and Mat6Tube URLs.
--   Automatically selects the best available video quality.
--   Uses `aria2c` for fast and reliable downloads.
--   Option to specify a custom output directory.
 
 ---
 
@@ -21,54 +13,48 @@ A simple and efficient script to download videos from Noodle Magazine, Mat6Tube,
 Before you begin, ensure you have the following installed:
 
 -   **Python 3**
--   **aria2c**: A command-line download utility.
+-   **aria2c**: A command-line download utility. (Optional in the experimental script)
 
-
-You can install the required Python packages using pip:
+Install the required Python packages:
 
 ```bash
-pip install requests
+pip install -r requirements.txt
 ```
 
 ---
 
 ## 🚀 Usage
 
-To download a video, simply run the script with the video URL:
+### Standard Version
+Simple and stable command-line interface.
 
 ```bash
-python NoodleMat-DL.py <URL>
+python NoodleMat-DL.py <URL> [-o /path/to/output]
 ```
 
-### Options
+### Experimental Version
 
--   `-o, --output <DIRECTORY>`: Specify a directory to save the downloaded video.
+ Uses RPC for aria2c for a consistent download UI. As well as introduces a robust Native downloader as fallback. (Can be forced using the --native flag)
 
 ### Examples
 
-> **Download a video to the current directory:**
+> **Download to current directory:**
 
 ```bash
-python NoodleMat-DL.py https://noodlemagazine.com/watch/-123456789
+python NoodleMat-DL.py https://mat6tube.com/watch/-123456789
 ```
 
-> **Download a video to a specific directory:**
+> **Experimental script usage:**
 
 ```bash
-python NoodleMat-DL.py https://noodlemagazine.com/watch/-1123456789 -o /path/to/your/videos
+python NoodleMat-experimental.py https://mat6tube.com/watch/-123456789
 ```
 
----
+> **Force the experimental native downloader:**
 
-## ⚙️ How It Works
-
-The script fetches the video page, extracts the video playlist, and identifies the URL for the highest quality video stream. It then invokes `aria2c` with the necessary cookies and headers to download the video efficiently.
-
----
-
-## 🤝 Contributing
-
-Contributions, issues, and feature requests are welcome!
+```bash
+python NoodleMat-experimental.py --native https://mat6tube.com/watch/-123456789
+```
 
 ---
 

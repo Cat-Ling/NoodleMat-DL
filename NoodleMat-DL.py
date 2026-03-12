@@ -5,14 +5,73 @@ import requests
 import re
 import subprocess
 import os
+import html
+import unicodedata
+
+def sanitize_filename(title):
+    """
+    Cleans up a string to be used as a safe filename across Windows, Linux, BSD, and macOS.
+    Supports all languages while stripping unsafe characters like $, emojis, and shell-sensitive symbols.
+    """
+    # Unescape HTML entities (e.g., &amp; -> &)
+    title = html.unescape(title)
+    
+    # Normalize Unicode (NFKC handles compatibility characters and unifies representations)
+    title = unicodedata.normalize('NFKC', title)
+    
+    # If the title is a URL, try to extract the last meaningful part
+    if "://" in title:
+        parts = [p for p in title.split("/") if p]
+        if len(parts) > 1:
+            title = parts[-1]
+    # If it looks like a file path (starts with / or has multiple separators), 
+    # take the last part. Otherwise, we keep it as it might be part of the title.
+    elif "/" in title or "\\" in title:
+        if title.count("/") > 1 or title.count("\\") > 1 or title.startswith("/") or title.startswith("\\"):
+            title = re.split(r'[\\/]', title)[-1]
+    
+    # Filter characters:
+    # Keep Letters (L), Numbers (N), Marks (M) (for accents/combining chars).
+    # Also keep a very limited set of safe punctuation/separators.
+    # This naturally strips $, emojis, and most shell-dangerous characters.
+    cleaned = []
+    for char in title:
+        cat = unicodedata.category(char)
+        if cat[0] in 'LNM':
+            cleaned.append(char)
+        elif char in " _-.,":
+            cleaned.append(char)
+    title = "".join(cleaned)
+
+    # Windows Reserved Names (cannot be used as filenames even with an extension)
+    reserved_names = {
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+    }
+    if title.upper() in reserved_names:
+        title += "_video"
+
+    # Strip leading/trailing whitespace and dots (problematic on Windows)
+    title = title.strip().strip('.')
+    
+    # Fallback for empty titles
+    if not title:
+        title = "video"
+        
+    # Enforce a safe filename length limit (200 bytes is safe for all systems).
+    max_bytes = 200
+    while len(title.encode('utf-8')) > max_bytes:
+        title = title[:-1]
+        
+    return title
 
 def download_video(url, output_directory=None):
     """
     Downloads a video from a URL that uses the pvvstream.pro video hosting.
     """
-    # Replace noodlemagazine.com with mat6tube.com since they're both identical
+    # Replace noodlemagazine.com and noodle.yemoja.xyz with mat6tube.com since they're both identical
     # except the fact that noodlemagazine fails, so we always use mat6tube urls internally.
-    url = url.replace("noodlemagazine.com", "mat6tube.com")
+    url = url.replace("noodlemagazine.com", "mat6tube.com").replace("noodle.yemoja.xyz", "mat6tube.com")
     try:
         session = requests.Session()
         session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.3029.110 Safari/537.36'})
@@ -46,7 +105,7 @@ def download_video(url, output_directory=None):
             title_match = re.search(r'<title>(.+?)</title>', page_content)
             title = title_match.group(1) if title_match else "video"
             
-            sanitized_title = re.sub(r'[\\/*?:">|<]',"", title) + ".mp4"
+            sanitized_title = sanitize_filename(title) + ".mp4"
 
             if output_directory:
                 if not os.path.isabs(output_directory):
