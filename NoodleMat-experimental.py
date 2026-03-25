@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 NoodleMat-Experimental: Advanced Noodle/Mat6 downloader with aria2c RPC and progress bar.
+Works on Linux, Windows, and Termux.
 """
 
 import argparse
@@ -49,12 +50,15 @@ def signal_handler(sig, frame) -> None:
         return
     state.is_shutting_down = True
     
+    # Strictly ignore further signals
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     sys.stdout.write(f"\n{CLR_YELLOW}[!] Shutdown signal received. Performing safety cleanup...{CLR_RESET}\n")
+    
     if state.current_downloader:
         state.current_downloader.handle_shutdown()
+    
     sys.stdout.write(f"{CLR_GREEN}[+] Cleanup complete. Safe to exit.{CLR_RESET}\n")
     os._exit(0)
 
@@ -89,7 +93,8 @@ class Aria2Downloader:
 
     def start_server(self) -> bool:
         try:
-            requests.get(self.rpc_url, timeout=1)
+            import requests as std_requests
+            std_requests.get(self.rpc_url, timeout=1)
             print(f"[*] aria2c RPC server already running on port {self.port}")
             return True
         except:
@@ -101,7 +106,8 @@ class Aria2Downloader:
             for _ in range(10):
                 time.sleep(0.5)
                 try:
-                    requests.get(self.rpc_url, timeout=1)
+                    import requests as std_requests
+                    std_requests.get(self.rpc_url, timeout=1)
                     return True
                 except: continue
         return False
@@ -115,7 +121,8 @@ class Aria2Downloader:
     def rpc_call(self, method: str, params: List = None) -> Any:
         payload = {"jsonrpc": "2.0", "id": "noodle", "method": method, "params": params or []}
         try:
-            response = requests.post(self.rpc_url, json=payload, timeout=10)
+            import requests as std_requests
+            response = std_requests.post(self.rpc_url, json=payload, timeout=10)
             response.raise_for_status()
             return response.json().get('result')
         except Exception as e:
@@ -215,19 +222,16 @@ class NativeDownloader:
         seg = self.segments[index]
         remaining = (seg['end'] - seg['start'] + 1) - seg['completed']
         if remaining <= 0: return
-
+        
         start = seg['start'] + seg['completed']
-        # Add Range and Referer to headers
         headers = {'Range': f'bytes={start}-{seg["end"]}', 'Accept-Encoding': 'identity', 'Referer': self.referer}
-
+        
         r = None
         try:
-            # Use curl_cffi if available, otherwise fallback to requests
             lib = curl_requests if HAS_CURL_CFFI else requests
             kwargs = {"impersonate": "chrome"} if HAS_CURL_CFFI else {}
-
+            
             r = lib.get(url, headers=headers, stream=True, timeout=30, **kwargs)
-
             
             if r.status_code == 200 and self.total_bytes > 0:
                 r.close()
