@@ -215,17 +215,19 @@ class NativeDownloader:
         seg = self.segments[index]
         remaining = (seg['end'] - seg['start'] + 1) - seg['completed']
         if remaining <= 0: return
-        
+
         start = seg['start'] + seg['completed']
-        headers = {'Range': f'bytes={start}-{seg["end"]}', 'Referer': self.referer}
-        
+        # Add Range and Referer to headers
+        headers = {'Range': f'bytes={start}-{seg["end"]}', 'Accept-Encoding': 'identity', 'Referer': self.referer}
+
         r = None
         try:
             # Use curl_cffi if available, otherwise fallback to requests
             lib = curl_requests if HAS_CURL_CFFI else requests
             kwargs = {"impersonate": "chrome"} if HAS_CURL_CFFI else {}
-            
+
             r = lib.get(url, headers=headers, stream=True, timeout=30, **kwargs)
+
             
             if r.status_code == 200 and self.total_bytes > 0:
                 r.close()
@@ -262,7 +264,8 @@ class NativeDownloader:
             lib = curl_requests if HAS_CURL_CFFI else requests
             kwargs = {"impersonate": "chrome"} if HAS_CURL_CFFI else {}
             
-            r = lib.get(video_url, stream=True, timeout=15, allow_redirects=True, referer=self.referer, **kwargs)
+            headers = {"Referer": self.referer}
+            r = lib.get(video_url, stream=True, timeout=15, allow_redirects=True, headers=headers, **kwargs)
             
             if r.status_code == 403 and not HAS_CURL_CFFI:
                 print(f"{CLR_RED}[!] Cloudflare blocked the native downloader (403 Forbidden).")
@@ -333,7 +336,8 @@ class NativeDownloader:
         try:
             lib = curl_requests if HAS_CURL_CFFI else requests
             kwargs = {"impersonate": "chrome"} if HAS_CURL_CFFI else {}
-            r = lib.get(url, stream=True, timeout=30, referer=self.referer, **kwargs)
+            headers = {"Referer": self.referer}
+            r = lib.get(url, stream=True, timeout=30, headers=headers, **kwargs)
             r.raise_for_status()
             mode = 'ab' if os.path.exists(self.part_path) else 'wb'
             with open(self.part_path, mode) as f:
