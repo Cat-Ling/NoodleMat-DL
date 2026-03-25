@@ -18,7 +18,14 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Dict, List, Any
 
-from curl_cffi import requests
+import requests
+
+# Optional curl_cffi for Cloudflare bypass on non-Termux systems
+try:
+    from curl_cffi import requests as curl_requests
+    HAS_CURL_CFFI = True
+except ImportError:
+    HAS_CURL_CFFI = False
 
 # --- ANSI Constants ---
 CLR_RESET = "\033[0m"
@@ -42,15 +49,12 @@ def signal_handler(sig, frame) -> None:
         return
     state.is_shutting_down = True
     
-    # Strictly ignore further signals
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     sys.stdout.write(f"\n{CLR_YELLOW}[!] Shutdown signal received. Performing safety cleanup...{CLR_RESET}\n")
-    
     if state.current_downloader:
         state.current_downloader.handle_shutdown()
-    
     sys.stdout.write(f"{CLR_GREEN}[+] Cleanup complete. Safe to exit.{CLR_RESET}\n")
     os._exit(0)
 
@@ -60,10 +64,7 @@ signal.signal(signal.SIGTERM, signal_handler)
 def sanitize_filename(title: str) -> str:
     title = html.unescape(title)
     title = unicodedata.normalize('NFKC', title)
-    
-    # Strip common site-specific suffixes for cleaner filenames
     title = re.sub(r'\s*-\s*BEST\s+XXX\s+TUBE\s*$', '', title, flags=re.IGNORECASE)
-
     if "://" in title:
         parts = [p for p in title.split("/") if p]
         if len(parts) > 1: title = parts[-1]
@@ -88,8 +89,7 @@ class Aria2Downloader:
 
     def start_server(self) -> bool:
         try:
-            import requests as std_requests
-            std_requests.get(self.rpc_url, timeout=1)
+            requests.get(self.rpc_url, timeout=1)
             print(f"[*] aria2c RPC server already running on port {self.port}")
             return True
         except:
@@ -101,8 +101,7 @@ class Aria2Downloader:
             for _ in range(10):
                 time.sleep(0.5)
                 try:
-                    import requests as std_requests
-                    std_requests.get(self.rpc_url, timeout=1)
+                    requests.get(self.rpc_url, timeout=1)
                     return True
                 except: continue
         return False
@@ -116,8 +115,7 @@ class Aria2Downloader:
     def rpc_call(self, method: str, params: List = None) -> Any:
         payload = {"jsonrpc": "2.0", "id": "noodle", "method": method, "params": params or []}
         try:
-            import requests as std_requests
-            response = std_requests.post(self.rpc_url, json=payload, timeout=10)
+            response = requests.post(self.rpc_url, json=payload, timeout=10)
             response.raise_for_status()
             return response.json().get('result')
         except Exception as e:
@@ -185,7 +183,7 @@ class Aria2Downloader:
         sys.stdout.flush()
 
 class NativeDownloader:
-    """Pure-python multi-threaded downloader fallback using curl_cffi."""
+    """Pure-python multi-threaded downloader fallback."""
     
     def __init__(self):
         self.lock = threading.Lock()
@@ -219,14 +217,16 @@ class NativeDownloader:
         if remaining <= 0: return
         
         start = seg['start'] + seg['completed']
-        headers = {'Range': f'bytes={start}-{seg["end"]}', 'Accept-Encoding': 'identity'}
+        headers = {'Range': f'bytes={start}-{seg["end"]}', 'Referer': self.referer}
         
         r = None
         try:
-            # Blast request like aria2c
-            r = requests.get(url, headers=headers, stream=True, timeout=30, impersonate="chrome", referer=self.referer)
+            # Use curl_cffi if available, otherwise fallback to requests
+            lib = curl_requests if HAS_CURL_CFFI else requests
+            kwargs = {"impersonate": "chrome"} if HAS_CURL_CFFI else {}
             
-            # If server ignores range and we are multi-threading, this thread must stop
+            r = lib.get(url, headers=headers, stream=True, timeout=30, **kwargs)
+            
             if r.status_code == 200 and self.total_bytes > 0:
                 r.close()
                 return
@@ -238,12 +238,10 @@ class NativeDownloader:
                     if chunk:
                         write_size = min(len(chunk), remaining)
                         f.write(chunk[:write_size])
-                        
                         with self.lock:
                             self.segments[index]['completed'] += write_size
                             self.completed_bytes += write_size
                             self.downloaded_session += write_size
-                        
                         remaining -= write_size
                         if remaining <= 0: break
         except: pass
@@ -259,10 +257,19 @@ class NativeDownloader:
             print(f"{CLR_GREEN}[+] File already fully downloaded: {output_path}{CLR_RESET}")
             return
 
-        print(f"{CLR_BLUE}[*] Using native multi-threaded downloader (curl_cffi)...{CLR_RESET}")
+        print(f"{CLR_BLUE}[*] Using native multi-threaded downloader...{CLR_RESET}")
         try:
-            # Initial size check
-            r = requests.get(video_url, stream=True, timeout=15, allow_redirects=True, impersonate="chrome", referer=self.referer)
+            lib = curl_requests if HAS_CURL_CFFI else requests
+            kwargs = {"impersonate": "chrome"} if HAS_CURL_CFFI else {}
+            
+            r = lib.get(video_url, stream=True, timeout=15, allow_redirects=True, referer=self.referer, **kwargs)
+            
+            if r.status_code == 403 and not HAS_CURL_CFFI:
+                print(f"{CLR_RED}[!] Cloudflare blocked the native downloader (403 Forbidden).")
+                print(f"{CLR_YELLOW}[*] Please install aria2 (e.g., 'pkg install aria2' on Termux) to continue.{CLR_RESET}")
+                r.close()
+                return
+                
             r.raise_for_status()
             self.total_bytes = int(r.headers.get('content-length', 0))
             accept_ranges = r.headers.get('accept-ranges', '').lower() == 'bytes' or r.status_code == 206
@@ -305,17 +312,14 @@ class NativeDownloader:
                         if curr - last_save_time >= 30:
                             self.save_state()
                             last_save_time = curr
-                            
                         elapsed = curr - start_time
                         speed = self.downloaded_session / elapsed if elapsed > 0 else 0
                         self._print_progress(self.completed_bytes, self.total_bytes, speed)
-                        
                         if all(f.done() for f in futures): break
                         time.sleep(0.5)
             else: self._single_thread(video_url)
 
             self.save_state()
-
             if not state.is_shutting_down and self.completed_bytes >= self.total_bytes:
                 if os.path.exists(self.state_file): os.remove(self.state_file)
                 os.rename(self.part_path, output_path)
@@ -327,7 +331,9 @@ class NativeDownloader:
         print(f"{CLR_YELLOW}[*] Single-threaded mode.{CLR_RESET}")
         r = None
         try:
-            r = requests.get(url, stream=True, timeout=30, impersonate="chrome", referer=self.referer)
+            lib = curl_requests if HAS_CURL_CFFI else requests
+            kwargs = {"impersonate": "chrome"} if HAS_CURL_CFFI else {}
+            r = lib.get(url, stream=True, timeout=30, referer=self.referer, **kwargs)
             r.raise_for_status()
             mode = 'ab' if os.path.exists(self.part_path) else 'wb'
             with open(self.part_path, mode) as f:
@@ -358,13 +364,13 @@ class NoodleExperimental:
     def run(self, url: str, output_dir: str = None):
         url = url.replace("noodlemagazine.com", "mat6tube.com").replace("noodle.yemoja.xyz", "mat6tube.com")
         try:
-            page = requests.get(url, impersonate="chrome").text
+            page = requests.get(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'}).text
             video_url, playlist_json = None, re.search(r'window\.playlist = ({.*?});', page)
             
             if not playlist_json:
                 dl_match = re.search(r'downloadUrl="([^"]+)"', page)
                 if dl_match:
-                    page = requests.get(f"https://mat6tube.com{dl_match.group(1)}", headers={'Referer': url}, impersonate="chrome").text
+                    page = requests.get(f"https://mat6tube.com{dl_match.group(1)}", headers={'Referer': url, 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'}).text
                     playlist_json = re.search(r'window\.playlist = ({.*?});', page)
 
             if playlist_json:
@@ -382,12 +388,9 @@ class NoodleExperimental:
                 title_match = re.search(r'<title>(.+?)</title>', page)
                 title = title_match.group(1) if title_match else ""
                 sanitized = sanitize_filename(title)
-                
-                # Fallback to video ID if sanitized name is empty
                 if not sanitized:
                     id_match = re.search(r'/watch/([-_\d]+)', url)
                     sanitized = id_match.group(1) if id_match else "video"
-                
                 sanitized += ".mp4"
                 output_path = os.path.join(os.path.abspath(output_dir or "."), sanitized)
                 
@@ -403,17 +406,13 @@ class NoodleExperimental:
                 if os.path.exists(aria_file) and not use_aria:
                     print(f"{CLR_YELLOW}[!] This download was started with aria2c. Please run without --native to continue.{CLR_RESET}")
                     return
-                
                 if os.path.exists(noodle_file) and use_aria:
                     print(f"{CLR_YELLOW}[!] This download was started with the native downloader. Please run with --native to continue.{CLR_RESET}")
                     return
 
                 print(f"[*] Found Video: {title}")
                 if use_aria:
-                    # Collect session info for aria2c
-                    # We can't easily get cookies from top-level curl_cffi calls, 
-                    # but referer is enough for many pvvstream links
-                    headers = {"Referer": url}
+                    headers = {"Referer": url, "User-Agent": 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'}
                     dl = Aria2Downloader(); dl.start_server(); dl.download(video_url, output_path, headers)
                 else:
                     NativeDownloader().download(video_url, output_path, url)

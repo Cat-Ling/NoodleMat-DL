@@ -1,2 +1,2 @@
 requests
-curl_cffi
+curl_cffi; sys_platform != 'android' and platform_system != 'Android' and sys_platform != 'ios' and platform_system != 'iOS'

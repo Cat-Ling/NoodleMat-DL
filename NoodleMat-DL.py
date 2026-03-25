@@ -14,7 +14,7 @@ import sys
 import unicodedata
 from typing import Optional
 
-from curl_cffi import requests
+import requests
 
 # --- Constants ---
 MAT6TUBE_DOMAIN = "mat6tube.com"
@@ -24,11 +24,10 @@ DOWNLOAD_URL_PATTERN = r'downloadUrl="([^"]+)"'
 
 
 def signal_handler(sig, frame) -> None:
-    """Gracefully handle Ctrl+C by letting subprocesses finish their shutdown."""
+    """Gracefully handle Ctrl+C."""
     sys.exit(0)
 
 
-# Initialize signal handling
 signal.signal(signal.SIGINT, signal_handler)
 
 
@@ -36,11 +35,8 @@ def sanitize_filename(title: str) -> str:
     """
     Cleans up a string to be used as a safe filename across Windows, Linux, and macOS.
     """
-    # Unescape HTML entities and normalize Unicode
     title = html.unescape(title)
     title = unicodedata.normalize('NFKC', title)
-
-    # Strip common site-specific suffixes for cleaner filenames
     title = re.sub(r'\s*-\s*BEST\s+XXX\s+TUBE\s*$', '', title, flags=re.IGNORECASE)
 
     if "://" in title:
@@ -69,10 +65,19 @@ def sanitize_filename(title: str) -> str:
 
 
 class NoodleDownloader:
-    """Handles the extraction and downloading of video content."""
+    """Handles extraction and downloading using requests and aria2c."""
+
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/110.0.0.0 Safari/537.36"
+            )
+        })
 
     def _get_playlist_from_content(self, content: str) -> Optional[dict]:
-        """Parses the window.playlist JSON from HTML content."""
         match = re.search(PVV_STREAM_PATTERN, content)
         if not match:
             return None
@@ -82,10 +87,8 @@ class NoodleDownloader:
             return None
 
     def _extract_video_url(self, playlist: dict) -> Optional[str]:
-        """Finds the highest quality video URL from a playlist dictionary."""
         best_quality = -1
         video_url = None
-
         for source in playlist.get('sources', []):
             label = str(source.get('label', '0')).replace('p', '')
             if label.isdigit():
@@ -96,15 +99,11 @@ class NoodleDownloader:
         return video_url
 
     def download(self, url: str, output_dir: Optional[str] = None) -> None:
-        """
-        Orchestrates the download process.
-        """
         url = url.replace("noodlemagazine.com", MAT6TUBE_DOMAIN).replace("noodle.yemoja.xyz", MAT6TUBE_DOMAIN)
 
         try:
             print(f"[*] Fetching page content: {url}")
-            # Use curl_cffi to bypass TLS fingerprinting
-            page_content = requests.get(url, impersonate="chrome").text
+            page_content = self.session.get(url).text
             video_url = None
 
             playlist = self._get_playlist_from_content(page_content)
@@ -114,7 +113,7 @@ class NoodleDownloader:
                 if dl_match:
                     print("[*] Main playlist missing. Attempting fallback to download page...")
                     dl_url = f"https://{MAT6TUBE_DOMAIN}{dl_match.group(1)}"
-                    dl_content = requests.get(dl_url, headers={'Referer': url}, impersonate="chrome").text
+                    dl_content = self.session.get(dl_url, headers={'Referer': url}).text
                     playlist = self._get_playlist_from_content(dl_content)
 
             if playlist:
@@ -128,12 +127,10 @@ class NoodleDownloader:
                 print("[-] Error: Could not find a valid video URL.")
                 return
 
-            # Determine title and output path
             title_match = re.search(r'<title>(.+?)</title>', page_content)
             title = title_match.group(1) if title_match else ""
             sanitized_name = sanitize_filename(title)
             
-            # Fallback to video ID if sanitized name is empty
             if not sanitized_name:
                 id_match = re.search(r'/watch/([-_\d]+)', url)
                 sanitized_name = id_match.group(1) if id_match else "video"
@@ -141,7 +138,6 @@ class NoodleDownloader:
             sanitized_name += ".mp4"
             output_path = os.path.join(os.path.abspath(output_dir or "."), sanitized_name)
             
-            # Check for existing download states
             if os.path.exists(output_path) and not os.path.exists(output_path + ".aria2"):
                 print(f"[+] Video has already been downloaded: {sanitized_name}")
                 return
@@ -153,9 +149,8 @@ class NoodleDownloader:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
             print(f"[+] Found Video: {sanitized_name}")
-            print(f"[*] Downloading to: {output_path}")
-
-            # Note: aria2c still used as primary download engine
+            
+            # Note: aria2c is required because requests is blocked by the CDN's TLS protection
             command = [
                 "aria2c", "-c", "-j", "16", "-s", "16", "-x", "16", "-k", "1M",
                 f'--header=Referer: {url}',
@@ -169,6 +164,8 @@ class NoodleDownloader:
                 print(f"[+] Successfully downloaded: {sanitized_name}")
             except subprocess.CalledProcessError as e:
                 print(f"[-] Download failed (aria2c exit code: {e.returncode})")
+            except FileNotFoundError:
+                print("[-] Error: aria2c not found. Please install aria2 (e.g., 'pkg install aria2' on Termux).")
             except KeyboardInterrupt:
                 pass
 
