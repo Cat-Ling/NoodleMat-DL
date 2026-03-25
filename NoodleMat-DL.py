@@ -1,49 +1,59 @@
 #!/usr/bin/env python3
+"""
+NoodleMat-DL: A simple and secure video downloader for pvvstream.pro hosted content.
+"""
 
 import argparse
-import requests
-import re
-import subprocess
-import os
 import html
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
 import unicodedata
+from typing import Optional
 
-def sanitize_filename(title):
+from curl_cffi import requests
+
+# --- Constants ---
+MAT6TUBE_DOMAIN = "mat6tube.com"
+PVV_STREAM_PATTERN = r"window\.playlist = ({.*?});"
+DIRECT_MP4_PATTERN = r'(https://.*?\.mp4.*?)'
+DOWNLOAD_URL_PATTERN = r'downloadUrl="([^"]+)"'
+
+
+def signal_handler(sig, frame) -> None:
+    """Gracefully handle Ctrl+C by letting subprocesses finish their shutdown."""
+    sys.exit(0)
+
+
+# Initialize signal handling
+signal.signal(signal.SIGINT, signal_handler)
+
+
+def sanitize_filename(title: str) -> str:
     """
-    Cleans up a string to be used as a safe filename across Windows, Linux, BSD, and macOS.
-    Supports all languages while stripping unsafe characters like $, emojis, and shell-sensitive symbols.
+    Cleans up a string to be used as a safe filename across Windows, Linux, and macOS.
     """
-    # Unescape HTML entities (e.g., &amp; -> &)
+    # Unescape HTML entities and normalize Unicode
     title = html.unescape(title)
-    
-    # Normalize Unicode (NFKC handles compatibility characters and unifies representations)
     title = unicodedata.normalize('NFKC', title)
-    
-    # If the title is a URL, try to extract the last meaningful part
-    if "://" in title:
-        parts = [p for p in title.split("/") if p]
-        if len(parts) > 1:
-            title = parts[-1]
-    # If it looks like a file path (starts with / or has multiple separators), 
-    # take the last part. Otherwise, we keep it as it might be part of the title.
-    elif "/" in title or "\\" in title:
-        if title.count("/") > 1 or title.count("\\") > 1 or title.startswith("/") or title.startswith("\\"):
-            title = re.split(r'[\\/]', title)[-1]
-    
-    # Filter characters:
-    # Keep Letters (L), Numbers (N), Marks (M) (for accents/combining chars).
-    # Also keep a very limited set of safe punctuation/separators.
-    # This naturally strips $, emojis, and most shell-dangerous characters.
-    cleaned = []
-    for char in title:
-        cat = unicodedata.category(char)
-        if cat[0] in 'LNM':
-            cleaned.append(char)
-        elif char in " _-.,":
-            cleaned.append(char)
-    title = "".join(cleaned)
 
-    # Windows Reserved Names (cannot be used as filenames even with an extension)
+    # Strip common site-specific suffixes for cleaner filenames
+    title = re.sub(r'\s*-\s*BEST\s+XXX\s+TUBE\s*$', '', title, flags=re.IGNORECASE)
+
+    if "://" in title:
+        title = [p for p in title.split("/") if p][-1]
+    elif "/" in title or "\\" in title:
+        title = re.split(r'[\\/]', title)[-1]
+
+    cleaned = [
+        char for char in title 
+        if unicodedata.category(char)[0] in 'LNM' or char in " _-.,"
+    ]
+    title = "".join(cleaned).strip().strip('.')
+
     reserved_names = {
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
@@ -51,102 +61,131 @@ def sanitize_filename(title):
     if title.upper() in reserved_names:
         title += "_video"
 
-    # Strip leading/trailing whitespace and dots (problematic on Windows)
-    title = title.strip().strip('.')
-    
-    # Fallback for empty titles
-    if not title:
-        title = "video"
-        
-    # Enforce a safe filename length limit (200 bytes is safe for all systems).
-    max_bytes = 200
-    while len(title.encode('utf-8')) > max_bytes:
+    title = title or "video"
+    while len(title.encode('utf-8')) > 200:
         title = title[:-1]
-        
+
     return title
 
-def download_video(url, output_directory=None):
-    """
-    Downloads a video from a URL that uses the pvvstream.pro video hosting.
-    """
-    # Replace noodlemagazine.com and noodle.yemoja.xyz with mat6tube.com since they're both identical
-    # except the fact that noodlemagazine fails, so we always use mat6tube urls internally.
-    url = url.replace("noodlemagazine.com", "mat6tube.com").replace("noodle.yemoja.xyz", "mat6tube.com")
-    try:
-        session = requests.Session()
-        session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.3029.110 Safari/537.36'})
 
-        page_content = session.get(url).text
+class NoodleDownloader:
+    """Handles the extraction and downloading of video content."""
 
+    def _get_playlist_from_content(self, content: str) -> Optional[dict]:
+        """Parses the window.playlist JSON from HTML content."""
+        match = re.search(PVV_STREAM_PATTERN, content)
+        if not match:
+            return None
+        try:
+            return json.loads(match.group(1))
+        except json.JSONDecodeError:
+            return None
+
+    def _extract_video_url(self, playlist: dict) -> Optional[str]:
+        """Finds the highest quality video URL from a playlist dictionary."""
+        best_quality = -1
         video_url = None
 
-        playlist_match = re.search(r'window\.playlist = ({.*?});', page_content)
-
-        if playlist_match:
-            playlist_json = playlist_match.group(1)
-            playlist_json = playlist_json.replace('true', 'True').replace('false', 'False')
-            playlist = eval(playlist_json)
-
-            best_quality = 0
-
-            for source in playlist['sources']:
-                quality = int(source['label'].replace('p', ''))
+        for source in playlist.get('sources', []):
+            label = str(source.get('label', '0')).replace('p', '')
+            if label.isdigit():
+                quality = int(label)
                 if quality > best_quality:
                     best_quality = quality
-                    video_url = source['file']
-        else:
-            video_url_match = re.search(r'(https://.*?\.mp4.*?)', page_content)
-            if video_url_match:
-                video_url = video_url_match.group(1)
+                    video_url = source.get('file')
+        return video_url
 
-        if video_url:
-            referrer = url
+    def download(self, url: str, output_dir: Optional[str] = None) -> None:
+        """
+        Orchestrates the download process.
+        """
+        url = url.replace("noodlemagazine.com", MAT6TUBE_DOMAIN).replace("noodle.yemoja.xyz", MAT6TUBE_DOMAIN)
 
-            title_match = re.search(r'<title>(.+?)</title>', page_content)
-            title = title_match.group(1) if title_match else "video"
+        try:
+            print(f"[*] Fetching page content: {url}")
+            # Use curl_cffi to bypass TLS fingerprinting
+            page_content = requests.get(url, impersonate="chrome").text
+            video_url = None
+
+            playlist = self._get_playlist_from_content(page_content)
             
-            sanitized_title = sanitize_filename(title) + ".mp4"
+            if not playlist:
+                dl_match = re.search(DOWNLOAD_URL_PATTERN, page_content)
+                if dl_match:
+                    print("[*] Main playlist missing. Attempting fallback to download page...")
+                    dl_url = f"https://{MAT6TUBE_DOMAIN}{dl_match.group(1)}"
+                    dl_content = requests.get(dl_url, headers={'Referer': url}, impersonate="chrome").text
+                    playlist = self._get_playlist_from_content(dl_content)
 
-            if output_directory:
-                if not os.path.isabs(output_directory):
-                    output_directory = os.path.abspath(output_directory)
-                output_path = os.path.join(output_directory, sanitized_title)
+            if playlist:
+                video_url = self._extract_video_url(playlist)
             else:
-                output_path = sanitized_title
+                mp4_match = re.search(DIRECT_MP4_PATTERN, page_content)
+                if mp4_match:
+                    video_url = mp4_match.group(1)
 
-            print(f"Found video URL: {video_url}")
-            print(f"Downloading video: {sanitized_title}")
+            if not video_url:
+                print("[-] Error: Could not find a valid video URL.")
+                return
 
-            cookies = session.cookies.get_dict()
-            cookie_string = "; ".join([f"{key}={value}" for key, value in cookies.items()])
+            # Determine title and output path
+            title_match = re.search(r'<title>(.+?)</title>', page_content)
+            title = title_match.group(1) if title_match else ""
+            sanitized_name = sanitize_filename(title)
+            
+            # Fallback to video ID if sanitized name is empty
+            if not sanitized_name:
+                id_match = re.search(r'/watch/([-_\d]+)', url)
+                sanitized_name = id_match.group(1) if id_match else "video"
+            
+            sanitized_name += ".mp4"
+            output_path = os.path.join(os.path.abspath(output_dir or "."), sanitized_name)
+            
+            # Check for existing download states
+            if os.path.exists(output_path) and not os.path.exists(output_path + ".aria2"):
+                print(f"[+] Video has already been downloaded: {sanitized_name}")
+                return
+            
+            if os.path.exists(output_path + ".noodle"):
+                print(f"[*] This download was started with the native downloader. Please use NoodleMat-experimental.py with --native to continue.")
+                return
 
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+            print(f"[+] Found Video: {sanitized_name}")
+            print(f"[*] Downloading to: {output_path}")
+
+            # Note: aria2c still used as primary download engine
             command = [
-                "aria2c",
-                "-c",
-                "-j", "16",
-                "-s", "16",
-                "-x", "16",
-                "-k", "1M",
-                f'--header=Cookie: {cookie_string}',
-                f'--header=Referer: {referrer}',
+                "aria2c", "-c", "-j", "16", "-s", "16", "-x", "16", "-k", "1M",
+                f'--header=Referer: {url}',
                 "-d", os.path.dirname(output_path),
                 "-o", os.path.basename(output_path),
                 video_url
             ]
 
-            subprocess.run(command)
+            try:
+                subprocess.run(command, check=True)
+                print(f"[+] Successfully downloaded: {sanitized_name}")
+            except subprocess.CalledProcessError as e:
+                print(f"[-] Download failed (aria2c exit code: {e.returncode})")
+            except KeyboardInterrupt:
+                pass
 
-            print(f"Downloaded: {sanitized_title}")
-        else:
-            print("Could not find video URL.")
+        except Exception as e:
+            print(f"[-] An unexpected error occurred: {e}")
 
-    except Exception as e:
-        print(f"An error occurred: {e}")
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="NoodleMat-DL: Professional video downloader for pvvstream content."
+    )
+    parser.add_argument("url", help="The URL of the video to download.")
+    parser.add_argument("-o", "--output", help="The directory to save the video.", default=None)
+    
+    args = parser.parse_args()
+    NoodleDownloader().download(args.url, args.output)
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Download videos from websites that use the pvvstream.pro video hosting.")
-    parser.add_argument("url", help="The URL of the video to download.")
-    parser.add_argument("-o", "--output", help="The directory to download the video to.", default=None)
-    args = parser.parse_args()
-
-    download_video(args.url, args.output)
+    main()
